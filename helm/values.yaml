@@ -1,0 +1,277 @@
+# Default values for stellar-security-scanner.
+# This is a YAML-formatted file.
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: "encrypted-ssd"
+
+# Image configuration
+image:
+  registry: docker.io
+  repository: stellar-security-scanner-backend
+  tag: "latest"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Replica configuration
+replicaCount: 2
+
+# Resource configuration
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# Autoscaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: "/"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: api.stellar-scanner.io
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: stellar-scanner-backend-tls
+      hosts:
+        - api.stellar-scanner.io
+
+# Pod configuration
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+
+# Node selector and tolerations
+nodeSelector:
+  kubernetes.io/os: linux
+
+tolerations:
+- key: "stellar.scanner/dedicated"
+  operator: "Equal"
+  value: "true"
+  effect: "NoSchedule"
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - stellar-security-scanner
+        topologyKey: kubernetes.io/hostname
+
+# Configuration
+config:
+  server:
+    port: 8080
+  kubernetes:
+    namespace: stellar-scanner
+    scannerImage: "stellar-security-scanner:latest"
+    logSidecarImage: "fluent/fluent-bit:latest"
+  scanner:
+    defaultResourceLimits:
+      cpuMillis: 1000
+      memoryMb: 2048
+      storageMb: 1024
+    defaultTimeoutMinutes: 30
+    maxConcurrentScans: 10
+    cleanupIntervalMinutes: 5
+  autoScaling:
+    enabled: true
+    scaleUpThreshold: 0.8
+    scaleDownThreshold: 0.2
+    maxScaleInstances: 50
+    minScaleInstances: 2
+
+# Secrets
+secrets:
+  encryptionKey: "change-me-in-production-32-chars"
+  jwtSecret: "change-me-in-production"
+  databaseUrl: "postgresql://user:pass@database/stellar_scanner"
+  redisUrl: "redis://pass@redis/stellar_scanner"
+
+# External dependencies
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: "change-me"
+    username: "stellar_scanner"
+    database: "stellar_scanner"
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: "encrypted-ssd"
+
+redis:
+  enabled: true
+  auth:
+    enabled: true
+    password: "change-me"
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+      storageClass: "encrypted-ssd"
+
+# Monitoring
+monitoring:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      namespace: stellar-scanner
+      labels:
+        release: prometheus
+  grafana:
+    enabled: true
+    dashboard:
+      enabled: true
+
+# Storage classes
+storageClasses:
+  encryptedSSD:
+    enabled: true
+    name: "encrypted-ssd"
+    provisioner: "kubernetes.io/aws-ebs"
+    parameters:
+      type: gp3
+      iops: "3000"
+      throughput: "125"
+      encrypted: "true"
+      fsType: ext4
+    allowVolumeExpansion: true
+    volumeBindingMode: WaitForFirstConsumer
+    reclaimPolicy: Delete
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Network policies
+networkPolicy:
+  enabled: true
+  ingress:
+    enabled: true
+    namespaces:
+      - ingress-nginx
+  egress:
+    enabled: true
+    namespaces:
+      - kube-system
+      - database
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "stellar-scanner-backend"
+
+# RBAC
+rbac:
+  create: true
+  clusterRole: true
+
+# Health checks
+healthChecks:
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Volume mounts
+volumeMounts:
+  - name: config
+    mountPath: /etc/stellar-scanner
+    readOnly: true
+  - name: tmp
+    mountPath: /tmp
+
+# Volumes
+volumes:
+  - name: config
+    configMap:
+      name: stellar-scanner-config
+  - name: tmp
+    emptyDir: {}
+
+# Environment variables
+env:
+  - name: SERVER_PORT
+    value: "8080"
+  - name: KUBERNETES_NAMESPACE
+    value: "stellar-scanner"
+  - name: SCANNER_IMAGE
+    value: "stellar-security-scanner:latest"
+  - name: LOG_SIDECAR_IMAGE
+    value: "fluent/fluent-bit:latest"
+  - name: DEFAULT_CPU_MILLIS
+    value: "1000"
+  - name: DEFAULT_MEMORY_MB
+    value: "2048"
+  - name: DEFAULT_STORAGE_MB
+    value: "1024"
+  - name: DEFAULT_TIMEOUT_MINUTES
+    value: "30"
+  - name: MAX_CONCURRENT_SCANS
+    value: "10"
+  - name: CLEANUP_INTERVAL_MINUTES
+    value: "5"
+  - name: AUTO_SCALE_ENABLED
+    value: "true"

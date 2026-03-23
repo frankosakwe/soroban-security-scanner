@@ -1,0 +1,22 @@
+apiVersion: v1
+name: stellar-security-scanner
+description: A Helm chart for Stellar Security Scanner Backend
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - stellar
+  - security
+  - scanner
+  - kubernetes
+  - rust
+home: https://github.com/frankosakwe/soroban-security-scanner
+sources:
+  - https://github.com/frankosakwe/soroban-security-scanner
+maintainers:
+  - name: Security Scanner Team
+    email: security@stellar-scanner.io
+dependencies: []
+annotations:
+  category: Security
+  licenses: MIT

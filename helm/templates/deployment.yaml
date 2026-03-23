@@ -1,0 +1,356 @@
+{{- range $name, $value := .Values.secrets }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: scanner-secrets
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "stellar-security-scanner.name" $ }}
+    helm.sh/chart: {{ include "stellar-security-scanner.chart" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    component: secrets
+type: Opaque
+data:
+  {{ $name }}: {{ $value | b64enc }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stellar-scanner-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "stellar-security-scanner.name" . }}
+    helm.sh/chart: {{ include "stellar-security-scanner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    component: config
+data:
+  config.yaml: |
+    server:
+      port: {{ .Values.config.server.port }}
+    kubernetes:
+      namespace: {{ .Values.config.kubernetes.namespace }}
+      scanner_image: {{ .Values.config.kubernetes.scannerImage }}
+      log_sidecar_image: {{ .Values.config.kubernetes.logSidecarImage }}
+    scanner:
+      default_resource_limits:
+        cpu_millis: {{ .Values.config.scanner.defaultResourceLimits.cpuMillis }}
+        memory_mb: {{ .Values.config.scanner.defaultResourceLimits.memoryMb }}
+        storage_mb: {{ .Values.config.scanner.defaultResourceLimits.storageMb }}
+      default_timeout_minutes: {{ .Values.config.scanner.defaultTimeoutMinutes }}
+      max_concurrent_scans: {{ .Values.config.scanner.maxConcurrentScans }}
+      cleanup_interval_minutes: {{ .Values.config.scanner.cleanupIntervalMinutes }}
+    auto_scaling:
+      enabled: {{ .Values.config.autoScaling.enabled }}
+      scale_up_threshold: {{ .Values.config.autoScaling.scaleUpThreshold }}
+      scale_down_threshold: {{ .Values.config.autoScaling.scaleDownThreshold }}
+      max_scale_instances: {{ .Values.config.autoScaling.maxScaleInstances }}
+      min_scale_instances: {{ .Values.config.autoScaling.minScaleInstances }}
+---
+{{- if .Values.serviceAccount.create -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "stellar-security-scanner.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "stellar-security-scanner.name" . }}
+    helm.sh/chart: {{ include "stellar-security-scanner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    component: serviceaccount
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: true
+{{- end }}
+---
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "stellar-security-scanner.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "stellar-security-scanner.name" . }}
+    helm.sh/chart: {{ include "stellar-security-scanner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    component: rbac
+rules:
+- apiGroups: [""]
+  resources: ["namespaces", "pods", "pods/log", "services", "configmaps", "secrets"]
+  verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
+- apiGroups: [""]
+  resources: ["persistentvolumes", "persistentvolumeclaims"]
+  verbs: ["create", "get", "list", "delete"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets", "podsecuritypolicies"]
+  verbs: ["create", "get", "list", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["create", "get", "list", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "stellar-security-scanner.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "stellar-security-scanner.name" . }}
+    helm.sh/chart: {{ include "stellar-security-scanner.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "stellar-security-scanner.fullname" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "stellar-security-scanner.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "stellar-security-scanner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellar-security-scanner.labels" . | nindent 4 }}
+    component: backend
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "stellar-security-scanner.selectorLabels" . | nindent 6 }}
+      component: backend
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "stellar-security-scanner.selectorLabels" . | nindent 8 }}
+        component: backend
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "stellar-security-scanner.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: backend
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.targetPort }}
+          protocol: TCP
+        env:
+        {{- range .Values.env }}
+        - name: {{ .name }}
+          value: "{{ .value }}"
+        {{- end }}
+        - name: ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: scanner-secrets
+              key: encryptionKey
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: scanner-secrets
+              key: jwtSecret
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: scanner-secrets
+              key: databaseUrl
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: scanner-secrets
+              key: redisUrl
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+        {{- with .Values.healthChecks.livenessProbe }}
+        livenessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.healthChecks.readinessProbe }}
+        readinessProbe:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        volumeMounts:
+          {{- toYaml .Values.volumeMounts | nindent 12 }}
+      volumes:
+        {{- toYaml .Values.volumes | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "stellar-security-scanner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellar-security-scanner.labels" . | nindent 4 }}
+    component: backend
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.port }}
+    targetPort: {{ .Values.service.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    {{- include "stellar-security-scanner.selectorLabels" . | nindent 4 }}
+    component: backend
+---
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "stellar-security-scanner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellar-security-scanner.labels" . | nindent 4 }}
+    component: autoscaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "stellar-security-scanner.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+  {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+  {{- end }}
+  behavior:
+    {{- toYaml .Values.autoscaling.behavior | nindent 4 }}
+{{- end }}
+---
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "stellar-security-scanner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellar-security-scanner.labels" . | nindent 4 }}
+    component: ingress
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            {{- if .pathType }}
+            pathType: {{ .pathType }}
+            {{- end }}
+            backend:
+              service:
+                name: {{ include "stellar-security-scanner.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}
+---
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "stellar-security-scanner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellar-security-scanner.labels" . | nindent 4 }}
+    component: pdb
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "stellar-security-scanner.selectorLabels" . | nindent 6 }}
+      component: backend
+{{- end }}
+---
+{{- if .Values.storageClasses.encryptedSSD.enabled }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClasses.encryptedSSD.name }}
+  labels:
+    {{- include "stellar-security-scanner.labels" . | nindent 4 }}
+    component: storage
+provisioner: {{ .Values.storageClasses.encryptedSSD.provisioner }}
+parameters:
+  {{- toYaml .Values.storageClasses.encryptedSSD.parameters | nindent 2 }}
+allowVolumeExpansion: {{ .Values.storageClasses.encryptedSSD.allowVolumeExpansion }}
+volumeBindingMode: {{ .Values.storageClasses.encryptedSSD.volumeBindingMode }}
+reclaimPolicy: {{ .Values.storageClasses.encryptedSSD.reclaimPolicy }}
+{{- end }}
